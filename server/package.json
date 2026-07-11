@@ -1,0 +1,12 @@
+{
+  "name": "be-01-first-api",
+  "version": "1.0.0",
+  "description": "BE-01 assignment - smallest possible backend with two JSON endpoints",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

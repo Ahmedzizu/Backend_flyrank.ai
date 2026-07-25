@@ -4,3 +4,14 @@ node_modules/
 npm-debug.log*
 dist/
 build/
+
+
+# git checkout main
+# git pull
+# git checkout -b feature/<اسم-التاسك>
+# # اشتغل، اختبر
+# git add .
+# git commit -m "وصف التاسك"
+# git checkout main
+# git merge feature/<اسم-التاسك>
+# git push

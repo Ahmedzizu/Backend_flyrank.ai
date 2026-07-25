@@ -1,52 +1,48 @@
 const db = require('../db');
 
-function getAllTasks(req, res) {
-  const tasks = db.prepare('SELECT * FROM tasks').all();
+async function getAllTasks(req, res) {
+  const tasks = await db.all('SELECT * FROM tasks ORDER BY id');
   res.json(tasks);
 }
 
-function getTask(req, res) {
-  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id);
+async function getTask(req, res) {
+  const task = await db.get('SELECT * FROM tasks WHERE id = $1', [req.params.id]);
   if (!task) return res.status(404).json({ error: "Task not found" });
   res.json(task);
 }
 
-
-function createTask(req, res) {
+async function createTask(req, res) {
   const { title } = req.body;
-  if (!title) {
-    return res.status(400).json({ error: "title is required" });
-  }
+  if (!title) return res.status(400).json({ error: "title is required" });
 
-  const insert = db.prepare('INSERT INTO tasks (title, done) VALUES (?, 0)');
-  const result = insert.run(title);
-
-  const newTask = db.prepare('SELECT * FROM tasks WHERE id = ?').get(result.lastInsertRowid);
-  res.status(201).json(newTask);
+  const result = await db.run(
+    'INSERT INTO tasks (title, done) VALUES ($1, false) RETURNING *',
+    [title]
+  );
+  res.status(201).json(result.rows[0]);
 }
 
-
-function updateTask(req, res) {
-  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id);
+async function updateTask(req, res) {
+  const task = await db.get('SELECT * FROM tasks WHERE id = $1', [req.params.id]);
   if (!task) return res.status(404).json({ error: "Task not found" });
 
   const { title, done } = req.body;
   const newTitle = title !== undefined ? title : task.title;
-  const newDone = done !== undefined ? (done ? 1 : 0) : task.done;
+  const newDone = done !== undefined ? done : task.done;
 
-  db.prepare('UPDATE tasks SET title = ?, done = ? WHERE id = ?').run(newTitle, newDone, req.params.id);
-
-  const updated = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id);
-  res.json(updated);
+  const result = await db.run(
+    'UPDATE tasks SET title = $1, done = $2 WHERE id = $3 RETURNING *',
+    [newTitle, newDone, req.params.id]
+  );
+  res.json(result.rows[0]);
 }
 
-function deleteTask(req, res) {
-  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id);
+async function deleteTask(req, res) {
+  const task = await db.get('SELECT * FROM tasks WHERE id = $1', [req.params.id]);
   if (!task) return res.status(404).json({ error: "Task not found" });
 
-  db.prepare('DELETE FROM tasks WHERE id = ?').run(req.params.id);
+  await db.run('DELETE FROM tasks WHERE id = $1', [req.params.id]);
   res.status(204).send();
 }
 
 module.exports = { createTask, getTask, updateTask, deleteTask, getAllTasks };
-

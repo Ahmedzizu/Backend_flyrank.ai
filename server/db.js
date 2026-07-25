@@ -1,21 +1,19 @@
-const Database = require('better-sqlite3');
-const db = new Database('tasks.db');
+require('dotenv').config();
+const { Pool } = require('pg');
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS tasks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL,
-    done BOOLEAN NOT NULL DEFAULT 0
-  )
-`);
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
-const count = db.prepare('SELECT COUNT(*) as count FROM tasks').get();
-
-if (count.count === 0) {
-  const insert = db.prepare('INSERT INTO tasks (title, done) VALUES (?, ?)');
-  insert.run('Buy milk', 0);
-  insert.run('Learn SQL', 0);
-  insert.run('Finish assignment', 0);
-}
-
-module.exports = db;
+module.exports = {
+  async all(query, params = []) {
+    const res = await pool.query(query, params);
+    return res.rows;
+  },
+  async get(query, params = []) {
+    const res = await pool.query(query, params);
+    return res.rows[0];
+  },
+  async run(query, params = []) {
+    const res = await pool.query(query, params);
+    return res;
+  }
+};

@@ -20,6 +20,13 @@ services:
       - "3000:3000"
     env_file:
       - .env
-
+  worker:
+    build: .
+    restart: always
+    command: node worker.js
+    env_file:
+      - .env
+    depends_on:
+      - db
 volumes:
   pgdata:

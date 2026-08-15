@@ -10,8 +10,8 @@ const PORT = 3000;
 app.use(express.json());
 
 app.use('/', mainRoutes);
-app.use('/tasks', tasksRoutes);
-app.use('/tasks', aiRoutes);
+app.use('/tasks', aiRoutes);      // الأول — /judge و /judge/:jobId
+app.use('/tasks', tasksRoutes);   // بعدها — CRUD بالأرقام
 
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 

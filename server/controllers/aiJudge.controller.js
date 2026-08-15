@@ -1,16 +1,11 @@
 "use strict";
 
-const { callStructuredLLM } = require("../llm/client");
-
-/**
- * The judgement we ask the model for: given raw task text, return a triage —
- * category, priority, a clean title, and an ISO date hint if one is mentioned.
- */
+const crypto = require("crypto");
+const db = require("../db");
 
 const CATEGORIES = ["bug", "feature", "chore", "research", "other"];
 const PRIORITIES = ["low", "medium", "high", "urgent"];
 
-// Contract sent to the model (Groq strict mode enforces it at decode time).
 const TASK_JUDGEMENT_SCHEMA = {
   type: "object",
   properties: {
@@ -30,10 +25,6 @@ const TASK_JUDGEMENT_SCHEMA = {
   additionalProperties: false,
 };
 
-/**
- * Server-side re-validation — even with strict mode we never trust the wire
- * blindly. Returns an error message string, or null if valid.
- */
 function validateJudgement(j) {
   if (!j || typeof j !== "object") return "judgement is not an object";
   if (!CATEGORIES.includes(j.category)) return "invalid category";
@@ -60,19 +51,10 @@ const SYSTEM_PROMPT = [
   "- confidence: 1.0 only when the text is unambiguous.",
 ].join("\n");
 
-function mapErrorToHttp(err) {
-  if (err.code === "TIMEOUT") return { status: 504, body: { error: "llm_timeout", detail: err.message } };
-  if (err.status === 429) return { status: 503, body: { error: "llm_rate_limited" } };
-  if (typeof err.status === "number" && err.status >= 400 && err.status < 500) {
-    return { status: 502, body: { error: "llm_provider_rejected", detail: `HTTP ${err.status}` } };
-  }
-  return { status: 502, body: { error: "llm_unavailable" } };
-}
-
 /**
- * POST /tasks/judge
- * Body: { "text": "Fix the login page crash before the demo on Monday" }
- * 200:  { "data": <TaskJudgement>, "meta": { "attempts": 1, "elapsedMs": 312 } }
+ * POST /tasks/judge — A7: no LLM call here. Validates, enqueues, answers 202.
+ * Idempotent: the same text (or a client-supplied Idempotency-Key header)
+ * always maps to the same job row.
  */
 async function judgeTask(req, res) {
   const { text } = req.body || {};
@@ -80,38 +62,39 @@ async function judgeTask(req, res) {
     return res.status(400).json({ error: "text is required (2-1000 chars)" });
   }
 
-  try {
-    const today = new Date().toISOString().slice(0, 10);
-    const result = await callStructuredLLM({
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: `Today is ${today}.\nTask text: """${text.trim()}"""` },
-      ],
-      schemaName: "task_judgement",
-      schema: TASK_JUDGEMENT_SCHEMA,
-    });
+  const trimmed = text.trim();
+  const key = req.headers["idempotency-key"] ||
+    crypto.createHash("sha256").update(trimmed).digest("hex");
 
-    let judgement;
-    try {
-      judgement = JSON.parse(result.content);
-    } catch {
-      return res.status(502).json({ error: "llm_invalid_json" });
-    }
-
-    const validationError = validateJudgement(judgement);
-    if (validationError) {
-      // Malformed model answer never reaches our response.
-      return res.status(502).json({ error: "llm_invalid_schema", detail: validationError });
-    }
-
-    return res.status(200).json({
-      data: judgement,
-      meta: { attempts: result.attempts, elapsedMs: result.elapsedMs },
-    });
-  } catch (err) {
-    const { status, body } = mapErrorToHttp(err);
-    return res.status(status).json(body);
-  }
+  const job = await db.enqueueJob(key, { text: trimmed });
+  return res.status(202).json({
+    job_id: job.id,
+    status: job.status,
+    links: { status: `/tasks/judge/${job.id}` },
+  });
 }
 
-module.exports = { judgeTask, validateJudgement, TASK_JUDGEMENT_SCHEMA };
+/**
+ * GET /tasks/judge/:jobId — status endpoint. Reports the result when done.
+ */
+async function getJudgeJob(req, res) {
+  const { jobId } = req.params;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(jobId)) {
+    return res.status(400).json({ error: "jobId must be a UUID" });
+  }
+
+  const job = await db.getJob(jobId);
+  if (!job) return res.status(404).json({ error: "Job not found" });
+
+  const body = {
+    job_id: job.id,
+    status: job.status,
+    attempts: job.attempts,
+    created_at: job.created_at,
+  };
+  if (job.status === "done") body.result = job.result;
+  if (job.status === "failed") body.error = job.error;
+  return res.json(body);
+}
+
+module.exports = { judgeTask, getJudgeJob, validateJudgement, TASK_JUDGEMENT_SCHEMA, SYSTEM_PROMPT };

@@ -1,32 +1,125 @@
-# Task API — Postgres Migration
+Task API — Postgres Migration + AI Task Triage (queued)
+Stack
+Node.js + Express
 
-## Stack
-- Node.js + Express
-- PostgreSQL (Docker, with named volume `pgdata`)
-- docker-compose runs app + db together
+PostgreSQL (Docker, with named volume pgdata) — also doubles as the job queue
 
-## Setup
-1. Copy `.env.example` to `.env`
-2. Run: `docker compose up --build`
-3. API available at http://localhost:3000/tasks
+docker-compose runs three services: app (API), db (Postgres), worker (background jobs)
 
-## Architecture
+Groq API (free tier) for AI judgements, OpenRouter free models as fallback
+
+Setup
+Copy .env.example to .env
+
+Add a free Groq key to .env: GROQ_API_KEY=gsk_... (console.groq.com/keys — no credit card)
+
+Run: docker compose up --build
+
+API at http://localhost:3000/tasks — Swagger docs at http://localhost:3000/api-docs
+
+Architecture
 The service and routes layers were NOT changed when swapping from
-in-memory storage to Postgres. Only `db.js` (connection) and
-`controllers/tasks.controller.js` (SQL queries) were updated to use
-the `pg` Pool instead of the in-memory array. This proves the
+in-memory storage to Postgres. Only db.js (connection) and
+controllers/tasks.controller.js (SQL queries) were updated to use
+the pg Pool instead of the in-memory array. This proves the
 repository pattern: storage is swappable without touching business logic.
 
-## Persistence proof
-1. Started stack with `docker compose up -d`, confirmed 3 seeded tasks via GET /tasks
-2. Added a new task via POST /tasks → returned `{"id":5,"title":"Persistence check","done":false}`
-3. Ran `docker compose down` — removed both app and db containers plus the network
-4. Ran `docker compose up -d` — fresh containers created, same named volume `pgdata` reattached
-5. GET /tasks returned all 4 tasks including id:5 — proving data survived a full
-   container teardown/rebuild thanks to the Docker volume, not just an app restart.
-## Endpoints
-- GET /tasks
-- GET /tasks/:id
-- POST /tasks
-- PUT /tasks/:id
-- DELETE /tasks/:id
+AI Task Triage — accept fast, work in background, report status
+The LLM call takes ~1s — too slow to hold a request open. So the endpoint
+never calls the model: it queues a job and answers instantly with 202.
+A separate worker service polls the queue, calls the model, and stores
+the result. A status endpoint reports where the job is.
+
+bash
+# 1. Accept fast — no model call in the request
+curl -X POST http://localhost:3000/tasks/judge \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Fix the login page crash before the demo on Monday"}'
+# 202 {"job_id":"...","status":"queued","links":{"status":"/tasks/judge/..."}}
+
+# 2. Report status — poll until done
+curl http://localhost:3000/tasks/judge/<job_id>
+# {"job_id":"...","status":"done","attempts":0,
+#  "result":{"category":"bug","priority":"high","suggested_title":"Fix login page crash",
+#            "due_hint":"2026-08-17","confidence":0.92}}
+Job lifecycle: queued → processing → done | failed.
+
+The non-negotiables
+Idempotency (jobs WILL run twice). Two layers: every job carries an
+idempotency_key (sha256 of the text, or a client Idempotency-Key
+header) with a UNIQUE constraint + ON CONFLICT — retrying the same
+request returns the same job, never a duplicate. And the worker skips
+any job already in done, so a double delivery never triggers a second
+model call or a second write.
+
+Retries (jobs WILL fail). failJob() reschedules the job with
+exponential backoff (5s → 10s → 20s) while attempts remain, then
+dead-letters it as failed. On top of the per-call retries inside the
+LLM client (A6), jobs get a second, coarser retry layer.
+
+Alerts (someone must find out). A permanently failed job fires
+alertJobFailed(): a loud [ALERT] JOB FAILED PERMANENTLY log line,
+plus a webhook POST if ALERT_WEBHOOK_URL is set (Slack/Discord).
+
+Queue mechanics
+The jobs table IS the queue — no Redis, no new dependencies.
+
+claimNextJob() uses FOR UPDATE SKIP LOCKED (the standard Postgres
+dequeue): two workers can never grab the same job.
+
+Jobs stuck in processing for >5 minutes (crashed worker) are
+reclaimed automatically.
+
+Trust guarantees on the model output (from A6, unchanged)
+Schema enforced twice: Groq json_schema strict mode (constrained
+decoding) + server-side validateJudgement. Malformed output fails the
+job instead of storing garbage.
+
+10s timeout per attempt via AbortController.
+
+Bounded per-call retries: 3 attempts with backoff for transient errors
+(5xx/429/network/timeout); permanent 4xx fails fast.
+
+Provider fallback chain: Groq → OpenRouter free models.
+
+Judgement, not autopilot: the API guarantees the shape of the answer,
+not its correctness — a human approves before anything is saved.
+
+Tests — 17 cases
+text
+node --test tests/
+A6 (9): happy path, malformed output rejected, timeout, retry-then-success,
+bounded retries, fail-fast on 4xx, request validation (400), enqueue → 202,
+retry-policy units.
+
+A7 (8): worker happy path, duplicate delivery skipped (idempotency),
+retry while attempts remain, dead-letter fires the alert, invalid model
+output fails the job, 202 + job_id from the endpoint, same request → same
+job, status endpoint (done/failed/404/400).
+
+Persistence proof
+Started stack with docker compose up -d, confirmed 3 seeded tasks via GET /tasks
+
+Added a new task via POST /tasks → returned {"id":5,"title":"Persistence check","done":false}
+
+Ran docker compose down — removed both app and db containers plus the network
+
+Ran docker compose up -d — fresh containers created, same named volume pgdata reattached
+
+GET /tasks returned all 4 tasks including id:5 — proving data survived a full
+container teardown/rebuild thanks to the Docker volume, not just an app restart.
+
+Endpoints
+GET /tasks
+
+GET /tasks/:id
+
+POST /tasks
+
+PUT /tasks/:id
+
+DELETE /tasks/:id
+
+POST /tasks/judge — enqueue AI triage job → 202 + job id (instant)
+
+GET /tasks/judge/:jobId — job status; result when done, error when failed

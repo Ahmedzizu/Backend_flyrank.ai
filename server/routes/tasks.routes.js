@@ -8,6 +8,20 @@ const {
   getAllTasks
 } = require('../controllers/tasks.controller');
 
+// Wraps async handlers so a rejected promise becomes a 500 instead of
+// crashing the whole process (Express 4 does not catch async errors).
+const asyncHandler = fn => (req, res, next) =>
+  Promise.resolve(fn(req, res, next)).catch(next);
+
+// /tasks/:id must be numeric — otherwise requests like GET /tasks/judge
+// fall through to getTask and explode inside Postgres.
+function validateId(req, res, next) {
+  if (!/^\d+$/.test(req.params.id)) {
+    return res.status(400).json({ error: "id must be an integer" });
+  }
+  next();
+}
+
 /**
  * @swagger
  * /tasks:
@@ -26,7 +40,7 @@ const {
  *       201:
  *         description: Task created
  */
-router.post('/', createTask);
+router.post('/', asyncHandler(createTask));
 
 /**
  * @swagger
@@ -37,7 +51,7 @@ router.post('/', createTask);
  *       200:
  *         description: List of tasks
  */
-router.get('/', getAllTasks);
+router.get('/', asyncHandler(getAllTasks));
 
 /**
  * @swagger
@@ -53,10 +67,12 @@ router.get('/', getAllTasks);
  *     responses:
  *       200:
  *         description: Task found
+ *       400:
+ *         description: id must be an integer
  *       404:
  *         description: Task not found
  */
-router.get('/:id', getTask);
+router.get('/:id', validateId, asyncHandler(getTask));
 
 /**
  * @swagger
@@ -83,10 +99,12 @@ router.get('/:id', getTask);
  *     responses:
  *       200:
  *         description: Task updated
+ *       400:
+ *         description: id must be an integer
  *       404:
  *         description: Task not found
  */
-router.put('/:id', updateTask);
+router.put('/:id', validateId, asyncHandler(updateTask));
 
 /**
  * @swagger
@@ -102,9 +120,11 @@ router.put('/:id', updateTask);
  *     responses:
  *       204:
  *         description: Task deleted
+ *       400:
+ *         description: id must be an integer
  *       404:
  *         description: Task not found
  */
-router.delete('/:id', deleteTask);
+router.delete('/:id', validateId, asyncHandler(deleteTask));
 
 module.exports = router;

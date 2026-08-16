@@ -4,11 +4,14 @@
   "description": "BE-01 assignment - smallest possible backend with two JSON endpoints",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
-  },
+  "start": "node server.js",
+  "worker": "node worker.js",
+  "test": "node --test tests/"
+},
   "dependencies": {
     "dotenv": "^17.4.2",
     "express": "^4.19.2",
+    "pdfkit": "^0.19.1",
     "pg": "^8.22.0",
     "swagger-jsdoc": "^6.3.0",
     "swagger-ui-express": "^5.0.1"

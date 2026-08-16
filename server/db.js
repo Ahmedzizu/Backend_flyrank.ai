@@ -67,13 +67,13 @@ module.exports = {
   },
 
   /** Enqueue, or return the existing job if the key was seen before (idempotent). */
-  async enqueueJob(idempotencyKey, payload) {
-    const res = await pool.query(`
-      INSERT INTO jobs (idempotency_key, payload)
-      VALUES ($1, $2)
-      ON CONFLICT (idempotency_key) DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
-      RETURNING *, (xmax = 0) AS inserted
-    `, [idempotencyKey, JSON.stringify(payload)]);
-    return res.rows[0];
-  }
+async enqueueJob(idempotencyKey, payload, kind = 'task_judge') {
+  const res = await pool.query(`
+    INSERT INTO jobs (idempotency_key, payload, kind)
+    VALUES ($1, $2, $3)
+    ON CONFLICT (idempotency_key) DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
+    RETURNING *, (xmax = 0) AS inserted
+  `, [idempotencyKey, JSON.stringify(payload), kind]);
+  return res.rows[0];
+}
 };
